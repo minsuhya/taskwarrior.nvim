@@ -117,6 +117,28 @@ require("taskwarrior").setup({
 })
 ```
 
+## 팁: solarized 테마에서 태스크가 안 보일 때
+
+taskwarrior 기본 `solarized-dark-256.theme` 은 blocked/blocking 태스크를
+`color0 on color10` 처럼 팔레트 상대색으로 칠하기 때문에, 터미널 팔레트에
+따라 어두운 글자가 어두운 배경 위에 얹혀 태스크가 보이지 않을 수 있습니다
+(플로팅 터미널로 여는 taskwarrior-tui 포함).
+
+`~/.taskrc` 에서 테마 include **뒤에** 절대 256색 오버라이드를 추가하면
+solarized 팔레트를 유지하면서 가시성이 해결됩니다:
+
+```
+include solarized-dark-256.theme
+
+# Solarized visibility overrides (must come after the theme include)
+color.blocked=color136
+color.blocking=bold color166
+color.due=color166
+color.due.today=bold color160
+color.overdue=bold color125
+color.alternate=on color235
+```
+
 ## License
 
 MIT
