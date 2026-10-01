@@ -41,4 +41,25 @@ function M.open()
   vim.cmd.startinsert()
 end
 
+---`task calendar` 출력(마감일 색 표시)을 플로팅 터미널로 보여준다. q/<Esc> 로 닫기
+function M.calendar()
+  local buf = vim.api.nvim_create_buf(false, true)
+  vim.bo[buf].bufhidden = "wipe"
+  local win = require("taskwarrior.util").open_float(buf, 80, 14, " task calendar ")
+
+  local cmd = { config.options.task_bin, "calendar" }
+  if vim.fn.has("nvim-0.11") == 1 then
+    vim.fn.jobstart(cmd, { term = true })
+  else
+    vim.fn.termopen(cmd)
+  end
+  for _, key in ipairs({ "q", "<Esc>" }) do
+    vim.keymap.set("n", key, function()
+      if vim.api.nvim_win_is_valid(win) then
+        vim.api.nvim_win_close(win, true)
+      end
+    end, { buffer = buf, nowait = true, silent = true })
+  end
+end
+
 return M

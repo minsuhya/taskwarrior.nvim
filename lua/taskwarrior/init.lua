@@ -5,8 +5,21 @@ function M.setup(opts)
   require("taskwarrior.config").setup(opts)
 end
 
-function M.open()
-  require("taskwarrior.ui").open()
+---@param opts table|nil { view = "list"|"agenda", filter = string }
+function M.open(opts)
+  require("taskwarrior.ui").open(opts)
+end
+
+function M.agenda()
+  require("taskwarrior.ui").open({ view = "agenda", filter = require("taskwarrior.config").options.filter })
+end
+
+function M.calendar()
+  require("taskwarrior.calendar").open()
+end
+
+function M.calendar_raw()
+  require("taskwarrior.tui").calendar()
 end
 
 function M.close()

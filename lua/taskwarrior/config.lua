@@ -13,6 +13,12 @@ M.defaults = {
     border = "rounded",
     title = " Taskwarrior ",
   },
+  agenda = {
+    days = 14, -- 오늘부터 표시할 일수 (지난 마감은 항상 맨 위에 표시)
+  },
+  calendar = {
+    weekstart = nil, -- "sunday" | "monday", nil 이면 taskrc 의 weekstart 사용
+  },
   confirm = {
     done = false,
     delete = true,
@@ -29,6 +35,8 @@ M.defaults = {
     filter = "f",
     refresh = "r",
     detail = "<CR>",
+    agenda = "v",
+    calendar = "c",
     tui = "t",
     help = "?",
     quit = "q",

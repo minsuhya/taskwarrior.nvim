@@ -5,6 +5,7 @@
 - `task export` 기반의 네이티브 Lua UI — 목록 조회, 추가, 완료, 삭제, 수정, start/stop, 우선순위, 주석, undo, 필터
 - urgency 내림차순 정렬, 기한(overdue/임박) 색상 표시, 진행 중(started) 태스크 강조
 - `vim.ui.input` / `vim.ui.select` 사용 — AstroNvim의 snacks/telescope UI와 자연스럽게 통합
+- 월 달력(`:TaskWarriorCalendar`)과 주간 일정 agenda(`:TaskWarriorAgenda`) — 날짜별 due 태스크 확인·추가
 - 보너스: `taskwarrior-tui` 가 설치되어 있으면 플로팅 터미널로 바로 열기 (`t` 키 또는 `:TaskWarriorTui`)
 
 ## 요구 사항
@@ -20,9 +21,11 @@
 ```lua
 {
   "minsuhya/taskwarrior.nvim",
-  cmd = { "TaskWarrior", "TaskWarriorTui" },
+  cmd = { "TaskWarrior", "TaskWarriorAgenda", "TaskWarriorCalendar", "TaskWarriorCalendarRaw", "TaskWarriorTui" },
   keys = {
     { "<Leader>lt", "<Cmd>TaskWarrior<CR>", desc = "Taskwarrior" },
+    { "<Leader>la", "<Cmd>TaskWarriorAgenda<CR>", desc = "Taskwarrior agenda" },
+    { "<Leader>lc", "<Cmd>TaskWarriorCalendar<CR>", desc = "Taskwarrior calendar" },
   },
   opts = {},
 }
@@ -35,7 +38,7 @@
 ```lua
 return {
   "minsuhya/taskwarrior.nvim",
-  cmd = { "TaskWarrior", "TaskWarriorTui" },
+  cmd = { "TaskWarrior", "TaskWarriorAgenda", "TaskWarriorCalendar", "TaskWarriorCalendarRaw", "TaskWarriorTui" },
   opts = {},
   specs = {
     {
@@ -44,6 +47,8 @@ return {
         mappings = {
           n = {
             ["<Leader>lt"] = { "<Cmd>TaskWarrior<CR>", desc = "Taskwarrior" },
+            ["<Leader>la"] = { "<Cmd>TaskWarriorAgenda<CR>", desc = "Taskwarrior agenda" },
+            ["<Leader>lc"] = { "<Cmd>TaskWarriorCalendar<CR>", desc = "Taskwarrior calendar" },
           },
         },
       },
@@ -69,6 +74,8 @@ return {
 | `f`     | 필터 변경 (task 필터 문법)                |
 | `r`     | 새로고침                                  |
 | `<CR>`  | 상세 정보 (`task information`)            |
+| `v`     | 목록 ↔ 주간 일정(agenda) 전환             |
+| `c`     | 달력 열기                                 |
 | `t`     | taskwarrior-tui 플로팅 터미널 열기        |
 | `?`     | 도움말                                    |
 | `q`/`<Esc>` | 닫기                                  |
@@ -80,6 +87,48 @@ task add > 보고서 작성 project:work +urgent due:friday priority:H
 task modify > due:tomorrow project:home
 filter > project:work status:pending
 ```
+
+### 주간 일정 (agenda)
+
+`:TaskWarriorAgenda` 또는 목록에서 `v`. 현재 필터에 해당하는 태스크 중 due 가 있는 것만
+**지난 마감** 섹션과 오늘부터 `agenda.days` 일(기본 14일) 동안의 날짜별 섹션으로 묶어 보여줍니다.
+태스크 줄 위에서는 완료·수정·start 등 목록 화면의 키가 그대로 동작합니다.
+
+```
+ 지난 마감  (2)
+ 161  H -21d   project-a     원서 접수
+ 10/01 (목) 오늘  (1)
+ 133    today  personal      카드 충전
+ 10/02 (금) 내일  (2)
+ ...
+ 10/03 (토)  —
+```
+
+### 달력
+
+`:TaskWarriorCalendar` 또는 목록에서 `c`. 날짜 옆 위첨자 숫자는 그날 마감인 pending 태스크 수이고,
+아래에는 선택한 날짜의 태스크 목록이 표시됩니다. 주 시작 요일은 taskrc 의 `weekstart` 를 따릅니다.
+
+```
+             2026년 10월
+    일   월   화   수   목   금   토
+                       1³   2²   3¹
+   4¹   5⁴   6²   7³   8    9   10¹
+```
+
+| 키            | 동작                                              |
+| ------------- | ------------------------------------------------- |
+| `h`/`l`       | 하루 이동                                         |
+| `j`/`k`       | 일주일 이동                                       |
+| `[`/`]` (`H`/`L`) | 이전/다음 달                                  |
+| `.`           | 오늘로 이동                                       |
+| `<CR>`        | 선택 날짜의 태스크를 목록 화면에서 열기           |
+| `a`           | 선택 날짜를 due 로 태스크 추가                    |
+| `v`           | 주간 일정 열기                                    |
+| `r` / `?` / `q` | 새로고침 / 도움말 / 닫기                        |
+
+`:TaskWarriorCalendarRaw` 는 `task calendar` 의 원래 출력(3개월, taskwarrior 색상 그대로)을
+플로팅 터미널로 보여줍니다 (`q` 로 닫기).
 
 ## 설정 (기본값)
 
@@ -93,6 +142,12 @@ require("taskwarrior").setup({
     height = 0.8,
     border = "rounded",
     title = " Taskwarrior ",
+  },
+  agenda = {
+    days = 14,                 -- 오늘부터 표시할 일수
+  },
+  calendar = {
+    weekstart = nil,           -- "sunday" | "monday", nil 이면 taskrc 의 weekstart
   },
   confirm = {
     done = false,              -- 완료 처리 시 확인 여부
@@ -110,6 +165,8 @@ require("taskwarrior").setup({
     filter = "f",
     refresh = "r",
     detail = "<CR>",
+    agenda = "v",
+    calendar = "c",
     tui = "t",
     help = "?",
     quit = "q",

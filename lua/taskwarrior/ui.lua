@@ -1,6 +1,7 @@
 local api = vim.api
 local cli = require("taskwarrior.cli")
 local config = require("taskwarrior.config")
+local util = require("taskwarrior.util")
 
 local M = {}
 
@@ -12,6 +13,7 @@ local state = {
   tasks = {},
   line_tasks = {}, -- 화면 line 번호 -> task
   filter = nil,
+  view = "list", -- "list" | "agenda"
 }
 
 local hl_links = {
@@ -27,58 +29,112 @@ local hl_links = {
   TaskwarriorPriorityH = "DiagnosticError",
   TaskwarriorPriorityM = "DiagnosticWarn",
   TaskwarriorPriorityL = "Comment",
+  TaskwarriorWeekend = "Special",
+  TaskwarriorToday = "CurSearch",
+  TaskwarriorSelected = "Visual",
 }
 
-local function ensure_hl()
+function M.ensure_hl()
   for group, link in pairs(hl_links) do
     api.nvim_set_hl(0, group, { link = link, default = true })
   end
 end
 
--- "20260723T150000Z" (UTC) -> epoch
-local function parse_ts(s)
-  local y, mo, d, h, mi, se = s:match("^(%d%d%d%d)(%d%d)(%d%d)T(%d%d)(%d%d)(%d%d)Z$")
-  if not y then
-    return nil
+local parse_ts, pad = util.parse_ts, util.pad
+
+-- 로컬 날짜 기준 일수 차이 (자정 기준, 시각 무시)
+local function day_diff(ts, now)
+  local function noon(t)
+    local d = os.date("*t", t)
+    return os.time({ year = d.year, month = d.month, day = d.day, hour = 12 })
   end
-  local now = os.time()
-  local utc_offset = os.difftime(now, os.time(os.date("!*t", now)))
-  return os.time({
-    year = tonumber(y),
-    month = tonumber(mo),
-    day = tonumber(d),
-    hour = tonumber(h),
-    min = tonumber(mi),
-    sec = tonumber(se),
-  }) + utc_offset
+  return math.floor((noon(ts) - noon(now)) / 86400 + 0.5)
 end
 
 local function fmt_due(ts, now)
-  local diff = ts - now
-  if diff < 0 then
-    if -diff < 86400 then
-      return "today", "TaskwarriorOverdue"
-    end
-    return "-" .. math.floor(-diff / 86400) .. "d", "TaskwarriorOverdue"
-  end
-  local days = math.floor(diff / 86400)
-  if days == 0 then
-    return "today", "TaskwarriorDueSoon"
+  local days = day_diff(ts, now)
+  if days < 0 then
+    return days .. "d", "TaskwarriorOverdue"
+  elseif days == 0 then
+    return "today", ts < now and "TaskwarriorOverdue" or "TaskwarriorDueSoon"
   elseif days <= 3 then
     return days .. "d", "TaskwarriorDueSoon"
   end
   return days .. "d", "TaskwarriorDue"
 end
 
--- 표시 폭 기준 패딩/자르기 (한글 등 멀티바이트 대응)
-local function pad(s, width)
-  s = s or ""
-  local dw = vim.fn.strdisplaywidth(s)
-  if dw > width then
-    s = vim.fn.strcharpart(s, 0, width - 1) .. "…"
-    dw = vim.fn.strdisplaywidth(s)
+local function task_segs(t, now)
+  local segs = { { " " } }
+  local id = (t.id and t.id ~= 0) and tostring(t.id) or tostring(t.uuid):sub(1, 4)
+  segs[#segs + 1] = { pad(id, 4), "TaskwarriorId" }
+  local pr = t.priority or ""
+  segs[#segs + 1] = { pad(pr, 1), pr ~= "" and ("TaskwarriorPriority" .. pr) or nil }
+
+  local due, due_hl = "", nil
+  if t.due then
+    local ts = parse_ts(t.due)
+    if ts then
+      due, due_hl = fmt_due(ts, now)
+    end
   end
-  return s .. string.rep(" ", math.max(0, width - dw + 1))
+  segs[#segs + 1] = { pad(due, 6), due_hl }
+  segs[#segs + 1] = { pad(t.project or "", 13), "TaskwarriorProject" }
+  segs[#segs + 1] = { t.description or "", t.start and "TaskwarriorActive" or nil }
+  if t.tags and #t.tags > 0 then
+    segs[#segs + 1] = { "  +" .. table.concat(t.tags, " +"), "TaskwarriorTag" }
+  end
+  return segs
+end
+
+local weekday_names = { "일", "월", "화", "수", "목", "금", "토" }
+
+---due 가 있는 태스크를 날짜별로 묶어 지난 마감 + 오늘부터 agenda.days 일까지 표시
+local function render_agenda(lines, hls, push, now)
+  local today = os.date("%Y-%m-%d", now)
+  local buckets, overdue = {}, {}
+  for _, t in ipairs(state.tasks) do
+    local key = util.due_key(t)
+    if key and key < today then
+      overdue[#overdue + 1] = t
+    elseif key then
+      buckets[key] = buckets[key] or {}
+      table.insert(buckets[key], t)
+    end
+  end
+  local by_due = function(a, b)
+    return a.due < b.due
+  end
+
+  local function section(title, tasks, group)
+    push({ { " " .. title, group }, { string.format("  (%d)", #tasks), "TaskwarriorColumns" } })
+    table.sort(tasks, by_due)
+    for _, t in ipairs(tasks) do
+      push(task_segs(t, now))
+      state.line_tasks[#lines] = t
+    end
+  end
+
+  if #overdue > 0 then
+    section("지난 마감", overdue, "TaskwarriorOverdue")
+  end
+  local d = os.date("*t", now)
+  for i = 0, config.options.agenda.days - 1 do
+    local ts = os.time({ year = d.year, month = d.month, day = d.day + i, hour = 12 })
+    local key = os.date("%Y-%m-%d", ts)
+    local wd = tonumber(os.date("%w", ts))
+    local label = os.date("%m/%d", ts) .. " (" .. weekday_names[wd + 1] .. ")"
+    if i == 0 then
+      label = label .. " 오늘"
+    elseif i == 1 then
+      label = label .. " 내일"
+    end
+    local tasks = buckets[key]
+    if tasks then
+      section(label, tasks, i == 0 and "TaskwarriorDueSoon" or "TaskwarriorHeader")
+    else
+      push({ { " " .. label .. "  —", (wd == 0 or wd == 6) and "TaskwarriorWeekend" or "TaskwarriorColumns" } })
+    end
+  end
 end
 
 local function render()
@@ -87,25 +143,13 @@ local function render()
   end
 
   local lines, hls = {}, {}
-  -- segs = { { text, hl_group|nil }, ... } 를 한 줄로 합치고 하이라이트 오프셋 기록
   local function push(segs)
-    local line = ""
-    local offsets = {}
-    for _, seg in ipairs(segs) do
-      local text, group = seg[1], seg[2]
-      if group and #text > 0 then
-        offsets[#offsets + 1] = { #line, #line + #text, group }
-      end
-      line = line .. text
-    end
-    lines[#lines + 1] = line
-    for _, o in ipairs(offsets) do
-      hls[#hls + 1] = { #lines - 1, o[1], o[2], o[3] }
-    end
+    util.push(lines, hls, segs)
   end
 
+  local agenda = state.view == "agenda"
   push({
-    { " " .. (state.filter == "" and "(no filter)" or state.filter), "TaskwarriorHeader" },
+    { " " .. (agenda and "Agenda · " or "") .. (state.filter == "" and "(no filter)" or state.filter), "TaskwarriorHeader" },
     { string.format("  [%d]", #state.tasks), "TaskwarriorColumns" },
   })
   push({
@@ -114,47 +158,32 @@ local function render()
 
   state.line_tasks = {}
   local now = os.time()
-  for _, t in ipairs(state.tasks) do
-    local segs = { { " " } }
-    local id = (t.id and t.id ~= 0) and tostring(t.id) or tostring(t.uuid):sub(1, 4)
-    segs[#segs + 1] = { pad(id, 4), "TaskwarriorId" }
-    local pr = t.priority or ""
-    segs[#segs + 1] = { pad(pr, 1), pr ~= "" and ("TaskwarriorPriority" .. pr) or nil }
-
-    local due, due_hl = "", nil
-    if t.due then
-      local ts = parse_ts(t.due)
-      if ts then
-        due, due_hl = fmt_due(ts, now)
-      end
+  if agenda then
+    render_agenda(lines, hls, push, now)
+  else
+    for _, t in ipairs(state.tasks) do
+      push(task_segs(t, now))
+      state.line_tasks[#lines] = t
     end
-    segs[#segs + 1] = { pad(due, 6), due_hl }
-    segs[#segs + 1] = { pad(t.project or "", 13), "TaskwarriorProject" }
-    segs[#segs + 1] = { t.description or "", t.start and "TaskwarriorActive" or nil }
-    if t.tags and #t.tags > 0 then
-      segs[#segs + 1] = { "  +" .. table.concat(t.tags, " +"), "TaskwarriorTag" }
+    if #state.tasks == 0 then
+      push({ { "  (표시할 태스크 없음 — 'a' 로 추가)", "TaskwarriorColumns" } })
     end
-    push(segs)
-    state.line_tasks[#lines] = t
   end
 
-  if #state.tasks == 0 then
-    push({ { "  (표시할 태스크 없음 — 'a' 로 추가)", "TaskwarriorColumns" } })
+  local shown = vim.tbl_count(state.line_tasks)
+  if shown ~= #state.tasks then
+    lines[1] = lines[1] .. string.format("  (표시 %d)", shown)
   end
-
-  vim.bo[state.buf].modifiable = true
-  api.nvim_buf_set_lines(state.buf, 0, -1, false, lines)
-  vim.bo[state.buf].modifiable = false
-
-  api.nvim_buf_clear_namespace(state.buf, ns, 0, -1)
-  for _, h in ipairs(hls) do
-    api.nvim_buf_set_extmark(state.buf, ns, h[1], h[2], { end_col = h[3], hl_group = h[4] })
-  end
+  util.set_lines(state.buf, ns, lines, hls)
 end
 
 function M.refresh()
   local cursor = (state.win and api.nvim_win_is_valid(state.win)) and api.nvim_win_get_cursor(state.win) or nil
-  local tasks, err = cli.export(state.filter)
+  local filter = state.filter
+  if state.view == "agenda" then
+    filter = filter == "" and "due.any:" or ("( " .. filter .. " ) due.any:")
+  end
+  local tasks, err = cli.export(filter)
   if not tasks then
     vim.notify("taskwarrior: " .. vim.trim(err or "export 실패"), vim.log.levels.ERROR)
     tasks = {}
@@ -254,6 +283,8 @@ function M.show_help()
     { km.filter, "필터 변경" },
     { km.refresh, "새로고침" },
     { km.detail, "상세 정보" },
+    { km.agenda, "목록 ↔ 주간 일정(agenda) 전환" },
+    { km.calendar, "달력 열기" },
     { km.tui, "taskwarrior-tui 열기" },
     { km.help, "도움말" },
     { km.quit, "닫기" },
@@ -378,15 +409,30 @@ local function set_keymaps(buf)
     M.show_detail(t)
   end, "detail")
 
+  map(km.agenda, function()
+    state.view = state.view == "agenda" and "list" or "agenda"
+    M.refresh()
+  end, "toggle agenda")
+
+  map(km.calendar, function()
+    M.close()
+    require("taskwarrior.calendar").open()
+  end, "calendar")
+
   map(km.tui, function()
     M.close()
     require("taskwarrior.tui").open()
   end, "taskwarrior-tui")
 end
 
-function M.open()
+---@param opts table|nil { view = "list"|"agenda", filter = string } 생략 시 기본 목록/필터
+function M.open(opts)
+  opts = opts or {}
+  state.view = opts.view or "list"
+  state.filter = opts.filter or config.options.filter
   if state.win and api.nvim_win_is_valid(state.win) then
     api.nvim_set_current_win(state.win)
+    M.refresh()
     return
   end
 
@@ -395,9 +441,8 @@ function M.open()
     return
   end
 
-  ensure_hl()
+  M.ensure_hl()
   local opts = config.options
-  state.filter = state.filter or opts.filter
 
   state.buf = api.nvim_create_buf(false, true)
   vim.bo[state.buf].buftype = "nofile"
